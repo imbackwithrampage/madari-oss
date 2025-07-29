@@ -1,0 +1,256 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build_windows:
+    runs-on: windows-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Set up environment variables
+        run: |
+          touch .env
+          dart run build_runner build --delete-conflicting-outputs
+
+      - name: Build Windows
+        run: make build_windows
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: build/windows/x64/runner/Release/
+
+      - run: |
+          cd build\windows\x64\runner\Release
+          Compress-Archive -Path * -DestinationPath WindowsRelease.zip -CompressionLevel Optimal
+          mkdir build
+          move WindowsRelease.zip build
+        shell: pwsh
+
+      - uses: ryand56/r2-upload-action@v1.4
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ secrets.R2_BUCKET }}
+          source-dir: build/windows/x64/runner/Release/build
+          destination-dir: nightly/${{ github.run_id }}/windows
+
+  build_android:
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Set up environment variables
+        run: |
+          touch .env
+          dart run build_runner build --delete-conflicting-outputs
+
+      - name: Create key.properties file
+        run: |
+          echo "storePassword=${{ secrets.STORE_PASSWORD }}" >> android/key.properties
+          echo "keyPassword=${{ secrets.KEY_PASSWORD }}" >> android/key.properties
+          echo "keyAlias=${{ secrets.KEY_ALIAS }}" >> android/key.properties
+          echo "storeFile=key.jks" >> android/key.properties
+
+      - name: Decode and save keystore file
+        run: |
+          echo "${{ secrets.STORE_FILE_BASE64 }}" | base64 --decode > android/app/key.jks
+
+      - run: |
+          sudo apt install ninja-build
+        name: install ninja
+
+      - name: Build Android
+        run: make build_android
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+      - uses: ryand56/r2-upload-action@v1.4
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ secrets.R2_BUCKET }}
+          source-dir: build/app/outputs/flutter-apk
+          destination-dir: nightly/${{ github.run_id }}/android
+
+  build_ipa:
+    runs-on: macos-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Set up environment variables
+        run: |
+          touch .env
+          dart run build_runner build --delete-conflicting-outputs
+
+      - name: Build iOS
+        run: make build_ipa
+
+      - name: Create and Pack IPA
+        run: |
+          cd build/ios/iphoneos
+          mkdir Payload
+          mv Runner.app Payload/
+          zip -r ../../../app.ipa Payload/
+          cd -
+
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build
+          path: app.ipa
+
+      - run: |
+          mkdir build_ipa
+          mv app.ipa build_ipa/
+
+      - uses: ryand56/r2-upload-action@v1.4
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ secrets.R2_BUCKET }}
+          source-dir: build_ipa/
+          destination-dir: nightly/${{ github.run_id }}/ios
+
+  build_linux:
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ninja-build libgtk-3-dev libmpv-dev mpv
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Set up environment variables
+        run: |
+          touch .env
+          dart run build_runner build --delete-conflicting-outputs
+
+      - name: Build Linux
+        run: make build_linux
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: build/linux/x64/release/bundle
+
+      - run: |
+          cd build/linux/x64/release
+          zip -r LinuxRelease.zip ./bundle
+          mkdir build && mv LinuxRelease.zip build/
+          cd -
+
+      - uses: ryand56/r2-upload-action@v1.4
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ secrets.R2_BUCKET }}
+          source-dir: build/linux/x64/release/build
+          destination-dir: nightly/${{ github.run_id }}/linux
+
+  build_macos:
+    runs-on: macos-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.1'
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Set up environment variables
+        run: |
+          touch .env
+          dart run build_runner build --delete-conflicting-outputs
+
+      - name: Build MacOS
+        run: make build_mac
+
+      - name: Isolate the Build
+        run: mkdir build/macos/Build/Products/Release/AppRelease
+
+      - run: mv build/macos/Build/Products/Release/Madari.app build/macos/Build/Products/Release/AppRelease/
+
+      - name: Upload MacOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: build/macos/Build/Products/Release/AppRelease
+
+      - run: |
+          cd build/macos/Build/Products/Release/AppRelease
+          zip -r AppRelease.zip .
+          mkdir mac_build
+          mv AppRelease.zip mac_build
+          cd -
+
+      - uses: ryand56/r2-upload-action@v1.4
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ secrets.R2_BUCKET }}
+          source-dir: build/macos/Build/Products/Release/AppRelease/mac_build
+          destination-dir: nightly/${{ github.run_id }}/macos
